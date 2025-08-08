@@ -18,23 +18,6 @@ from ta.volatility import BollingerBands
 # Default global values to avoid reference errors
 news_score = 0
 risk_score = 5  # neutral
-st.set_page_config(page_title="Stock Analyzer Bot", page_icon="📈", layout="wide")
-
-st.markdown("""
-    <style>
-        .big-font {
-            font-size:30px !important;
-            font-weight: bold;
-        }
-        .stButton>button {
-            background-color: #2c7be5;
-            color: white;
-            font-weight: bold;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown('<p class="big-font">📊 Stock Analyzer Bot</p>', unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbol, start_date, end_date):
