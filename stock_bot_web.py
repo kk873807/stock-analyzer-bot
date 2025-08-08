@@ -6,89 +6,154 @@ import matplotlib.pyplot as plt
 import streamlit as st
 import requests
 import numpy as np
+import json
+import plotly.express as px
+from datetime import date, timedelta
 from textblob import TextBlob
-from countryinfo import CountryInfo
-# Mocked data for macro indicators (in production, pull from APIs)
+
+@st.cache_data(ttl=3600)
+def fetch_stock_data(symbol, start_date, end_date):
+    data = yf.download(symbol, start=start_date, end=end_date, group_by="column", auto_adjust=True)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [col[0] for col in data.columns]
+    data["MA50"] = data["Close"].rolling(window=50).mean()
+    data["MA200"] = data["Close"].rolling(window=200).mean()
+    return data
+
+# ========== PHASE 1: Streamlit Setup & Portfolio Load ==========
+with open("portfolio_data.json", "r") as f:
+    portfolio_json = json.load(f)
+
+if not portfolio_json or "stocks" not in portfolio_json or len(portfolio_json["stocks"]) == 0:
+    st.error("No portfolio data found. Please add stocks to portfolio_data.json.")
+    st.stop()
+
+selected_stock = st.selectbox("Select a stock", portfolio_json["stocks"], format_func=lambda x: x["name"])
+stock_symbol = selected_stock["symbol"]
+st.set_page_config(page_title="📊 Stock Analyzer Bot", layout="centered")
+st.title("📈 Stock Analysis Bot")
+st.subheader("📁 Portfolio Overview")
+total_stocks = len(portfolio_json["stocks"])
+symbols = [stock["symbol"] for stock in portfolio_json["stocks"]]
+st.write(f"Total Stocks: **{total_stocks}**")
+st.write("Symbols in Portfolio:", ", ".join(symbols))
+
+# ========== PHASE 2: Date Selection & Data Fetching ==========
+
+date_range = st.date_input("📅 Select date range", [date.today() - timedelta(days=180), date.today()])
+if len(date_range) != 2:
+    st.warning("Please select a valid start and end date.")
+    st.stop()
+start_date, end_date = date_range
+
+stock_data = fetch_stock_data(stock_symbol, start_date, end_date)
+
+
+# 🔧 Flatten MultiIndex columns if present
+if isinstance(stock_data.columns, pd.MultiIndex):
+    stock_data.columns = [col[0] for col in stock_data.columns]
+
+if stock_data.empty:
+    st.error("No data found for selected date range.")
+    st.stop()
+
+stock_data["MA50"] = stock_data["Close"].rolling(window=50).mean()
+stock_data["MA200"] = stock_data["Close"].rolling(window=200).mean()
+
+
+# ========== PHASE 3: Stock Price Visualization ==========
+
+fig = px.line(stock_data.reset_index(), x="Date", y=["Close", "MA50", "MA200"],
+              labels={"value": "Price", "variable": "Metric"},
+              title=f"{stock_symbol} Price & Moving Averages")
+st.plotly_chart(fig)
+
+# ========== PHASE 4: Metrics and Investment Suggestion ==========
+
+st.subheader("📊 Stock Metrics")
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Current Price", f"₹{stock_data['Close'].iloc[-1]:.2f}")
+with col2:
+    st.metric("52 Week High", f"₹{stock_data['High'].max():.2f}")
+with col3:
+    st.metric("52 Week Low", f"₹{stock_data['Low'].min():.2f}")
+
+st.subheader("🤖 Investment Suggestion")
+ma50 = stock_data['MA50'].iloc[-1]
+ma200 = stock_data['MA200'].iloc[-1]
+price = stock_data['Close'].iloc[-1]
+
+if ma50 > ma200 and price > ma50:
+    st.success("📈 Uptrend detected. Consider buying or holding.")
+elif ma50 < ma200 and price < ma50:
+    st.warning("📉 Downtrend detected. Consider avoiding or selling.")
+else:
+    st.info("⚖️ No strong trend detected. Monitor closely.")
+
+# ========== PHASE 5: Macro Analysis ==========
+
 macro_data = {
-    "India": {
-        "GDP_growth": 6.5,
-        "Inflation": 5.4,
-        "Interest_rate": 6.5,
-        "Geopolitical_risk": "Low"
-    },
-    "United States": {
-        "GDP_growth": 2.1,
-        "Inflation": 3.4,
-        "Interest_rate": 5.25,
-        "Geopolitical_risk": "Moderate"
-    },
-    "China": {
-        "GDP_growth": 5.0,
-        "Inflation": 2.2,
-        "Interest_rate": 3.6,
-        "Geopolitical_risk": "High"
-    }
+    "India": {"GDP_growth": 6.5, "Inflation": 5.4, "Interest_rate": 6.5, "Geopolitical_risk": "Low"},
+    "United States": {"GDP_growth": 2.1, "Inflation": 3.4, "Interest_rate": 5.25, "Geopolitical_risk": "Moderate"},
+    "China": {"GDP_growth": 5.0, "Inflation": 2.2, "Interest_rate": 3.6, "Geopolitical_risk": "High"}
 }
 
-def get_macro_analysis(stock_symbol):
-    # Guess country from ticker
-    if ".NS" in stock_symbol:
+def get_macro_analysis(symbol):
+    if ".NS" in symbol:
         country = "India"
-    elif stock_symbol.upper() in ["AAPL", "TSLA", "MSFT", "AMZN"]:
+    elif symbol.upper() in ["AAPL", "TSLA", "MSFT", "AMZN"]:
         country = "United States"
-    elif stock_symbol.upper() in ["BABA", "JD"]:
+    elif symbol.upper() in ["BABA", "JD"]:
         country = "China"
     else:
         country = "United States"
 
-    data = macro_data.get(country, None)
+    data = macro_data.get(country)
     if not data:
-        return {"error": "Country macro data not found."}
+        return {"country": country, "summary": ["No macro data available."]}
 
-    analysis = []
+    summary = []
 
-    # GDP Growth
     if data["GDP_growth"] > 3:
-        analysis.append("✅ GDP growth is strong.")
+        summary.append("✅ Strong GDP growth.")
     else:
-        analysis.append("⚠️ Low GDP growth. Might affect markets.")
+        summary.append("⚠️ Weak GDP growth.")
 
-    # Inflation
     if data["Inflation"] > 6:
-        analysis.append("❌ High inflation may reduce profitability.")
+        summary.append("❌ High inflation risk.")
     elif data["Inflation"] > 4:
-        analysis.append("⚠️ Inflation is slightly elevated.")
+        summary.append("⚠️ Slightly elevated inflation.")
     else:
-        analysis.append("✅ Inflation is within safe range.")
+        summary.append("✅ Stable inflation.")
 
-    # Interest Rate
     if data["Interest_rate"] > 5:
-        analysis.append("⚠️ High interest rates may reduce investments.")
+        summary.append("⚠️ High interest rates.")
     else:
-        analysis.append("✅ Interest rates are investor-friendly.")
+        summary.append("✅ Investor-friendly interest rates.")
 
-    # Geopolitical Risk
     risk = data["Geopolitical_risk"]
     if risk == "Low":
-        analysis.append("✅ Geopolitical risk is minimal.")
+        summary.append("✅ Low geopolitical risk.")
     elif risk == "Moderate":
-        analysis.append("⚠️ Moderate geopolitical risks present.")
+        summary.append("⚠️ Moderate geopolitical risk.")
     else:
-        analysis.append("❌ High geopolitical risk. Proceed cautiously.")
+        summary.append("❌ High geopolitical risk.")
 
-    return {
-        "country": country,
-        "summary": analysis
-    }
+    return {"country": country, "summary": summary}
 
+st.subheader("🌐 Macro Economic Insight")
+macro = get_macro_analysis(stock_symbol)
+st.markdown(f"**Country:** {macro['country']}")
+for point in macro["summary"]:
+    st.markdown(f"- {point}")
 
-# ====== 🔑 Enter your NewsData.io API key here ======
-API_KEY = "pub_aeb8f6aeaa614154856ab1817ffe14dd"  # <-- Replace this with your API key
-# ================================================
+# ========== PHASE 6: News Sentiment Analysis ==========
+
+API_KEY = "pub_aeb8f6aeaa614154856ab1817ffe14dd"
 
 def get_news_sentiment(stock_name):
     url = f"https://newsdata.io/api/1/news?apikey={API_KEY}&q={stock_name}&language=en&country=in"
-
     try:
         response = requests.get(url)
         news_data = response.json()
@@ -127,7 +192,18 @@ def get_news_sentiment(stock_name):
     except Exception as e:
         return {"error": str(e)}
 
+st.subheader("📰 News Sentiment")
+sentiment = get_news_sentiment(selected_stock["name"])
+if "error" in sentiment:
+    st.error(sentiment["error"])
+else:
+    st.write(f"**Positive:** {sentiment['Positive']} | **Negative:** {sentiment['Negative']} | **Neutral:** {sentiment['Neutral']}")
+    for title, senti in sentiment["Details"]:
+        st.markdown(f"- **{senti}**: {title}")
 
+# ========== PHASE 7: Peer Comparison ==========
+
+st.subheader("👥 Peer Comparison")
 peer_dict = {
     "INFY.NS": ["TCS.NS", "WIPRO.NS", "TECHM.NS"],
     "TCS.NS": ["INFY.NS", "WIPRO.NS", "HCLTECH.NS"],
@@ -136,216 +212,25 @@ peer_dict = {
     "TSLA": ["F", "GM", "NIO"]
 }
 
-st.set_page_config(page_title="📊 Stock Analyzer", layout="centered")
-st.title(":chart_with_upwards_trend: Stock Analyzer Bot (Beginner Friendly)")
-
-stock_symbol = st.text_input("Enter Stock Symbol (e.g., INFY.NS, TCS.NS, AAPL, TSLA)", value="INFY.NS")
-
-if stock_symbol:
-    try:
-        stock = yf.Ticker(stock_symbol)
-        info = stock.info
-
-        st.subheader(f"📌 {info.get('longName', stock_symbol)}")
-        current_price = info.get('currentPrice', None)
-        high_52 = info.get('fiftyTwoWeekHigh', None)
-        low_52 = info.get('fiftyTwoWeekLow', None)
-        pe_ratio = info.get('trailingPE', None)
-
-        st.markdown(f"**Current Price:** ₹{current_price}")
-        st.markdown(f"**52-Week High:** ₹{high_52}")
-        st.markdown(f"**52-Week Low:** ₹{low_52}")
-        st.markdown(f"**P/E Ratio:** {pe_ratio}")
-        st.markdown(f"**Market Cap:** {info.get('marketCap', 'N/A')}")
-        st.markdown(f"**Sector:** {info.get('sector', 'N/A')}")
-
-        hist = stock.history(period="6mo")
-        hist["50MA"] = hist["Close"].rolling(window=50).mean()
-
-        hist["20MA"] = hist["Close"].rolling(window=20).mean()
-        hist["200MA"] = hist["Close"].rolling(window=200).mean()
-        hist["Returns"] = hist["Close"].pct_change()
-        hist["Volatility"] = hist["Returns"].rolling(window=20).std() * np.sqrt(252)
-
-        st.subheader(":chart_with_downwards_trend: Stock Price Trend (6 Months)")
-        fig, ax = plt.subplots()
-        ax.plot(hist.index, hist["Close"], label="Close Price")
-        ax.plot(hist.index, hist["20MA"], label="20-Day MA", linestyle='--')
-        ax.plot(hist.index, hist["50MA"], label="50-Day MA", linestyle='--')
-        ax.plot(hist.index, hist["200MA"], label="200-Day MA", linestyle='--')
-
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Price (₹)")
-        ax.set_title(f"{stock_symbol.upper()} - Last 6 Months")
-        ax.legend()
-        st.pyplot(fig)
-
-        st.subheader("🧠 Investment Suggestion:")
-        suggestion = []
-
-        if current_price and low_52 and current_price <= (low_52 * 1.1):
-            suggestion.append("✅ Price is near 52-week low. May be undervalued.")
-        elif current_price and high_52 and current_price >= (high_52 * 0.95):
-            suggestion.append("⚠️ Price is near 52-week high. Wait for better entry.")
-
-        if pe_ratio:
-            if pe_ratio < 10:
-                suggestion.append("✅ Very low P/E ratio. Likely undervalued.")
-            elif 10 <= pe_ratio <= 25:
-                suggestion.append("🟡 Fairly valued based on P/E ratio.")
-            else:
-                suggestion.append("🔺 High P/E ratio. Could be overvalued.")
-
-        if "Close" in hist.columns:
-            latest_50ma = hist["50MA"].iloc[-1]
-            if current_price and current_price > latest_50ma:
-                suggestion.append("📈 Price is above 50-day MA. Bullish signal.")
-            elif current_price and current_price < latest_50ma:
-                suggestion.append("📉 Price is below 50-day MA. Bearish signal.")
-
-        if suggestion:
-            for s in suggestion:
-                st.markdown(f"- {s}")
-        else:
-            st.info("Not enough data to analyze stock.")
-
-    except Exception as e:
-        st.error(f"Failed to load data: {e}")
-
-# =================== PHASE 6 ENHANCED LOGIC ====================
-st.subheader("📊 Buy/Sell Signal Strength")
-
-company_name = info.get("longName") or info.get("shortName") or stock_symbol
-sentiment = get_news_sentiment(company_name)
-
-strength_score = 0
-
-
-# Near 52-week low?
-if current_price and low_52 and current_price <= (low_52 * 1.1):
-    strength_score += 2
-
-# P/E Ratio
-if pe_ratio:
-    if pe_ratio < 10:
-        strength_score += 2
-    elif pe_ratio <= 25:
-        strength_score += 1
-    else:
-        strength_score -= 1
-
-# Moving Average Crossovers
-latest_20ma = hist["20MA"].iloc[-1]
-latest_50ma = hist["50MA"].iloc[-1]
-latest_200ma = hist["200MA"].iloc[-1]
-
-if current_price > latest_20ma > latest_50ma:
-    strength_score += 2
-elif current_price > latest_50ma:
-    strength_score += 1
-else:
-    strength_score -= 1
-
-# News Sentiment
-if sentiment["Positive"] > sentiment["Negative"]:
-    strength_score += 1
-elif sentiment["Negative"] > sentiment["Positive"]:
-    strength_score -= 1
-
-# Volatility check
-vol = hist["Volatility"].iloc[-1]
-if vol and vol > 0.4:
-    st.warning("⚠️ High market volatility. Extra caution advised.")
-    strength_score -= 1
-else:
-    st.info("✅ Market volatility is within normal range.")
-
-# Decision Based on Score
-if strength_score >= 5:
-    st.success("📈 Strong Buy Signal")
-elif strength_score >= 3:
-    st.info("🟢 Mild Buy Signal")
-elif strength_score <= -1:
-    st.error("🔻 Sell/Exit Signal")
-else:
-    st.warning("🟡 Hold / Wait — Signal is Neutral")
-
-# ================= PEER COMPARISON ===================
-st.subheader(":bar_chart: Peer Comparison")
 peers = peer_dict.get(stock_symbol.upper(), [])
+peer_data = {}
 
-if not peers:
-    st.info("No peer data available for this stock.")
+for peer in peers:
+    try:
+        p_info = yf.Ticker(peer).info
+        peer_data[peer] = {
+            "Name": p_info.get("shortName", peer),
+            "Price": p_info.get("regularMarketPrice", "NA"),
+            "P/E Ratio": p_info.get("trailingPE", "NA"),
+            "Market Cap": p_info.get("marketCap", "NA")
+        }
+    except Exception as e:
+        peer_data[peer] = {"Name": peer, "Error": str(e)}
+
+if peer_data:
+    st.dataframe(pd.DataFrame.from_dict(peer_data, orient="index"))
 else:
-    data = []
+    st.info("No peers found for comparison.")
 
-    for peer in peers:
-        try:
-            p = yf.Ticker(peer)
-            p_info = p.info
-            name = p_info.get('shortName', peer)
-            price = p_info.get('currentPrice', None)
-            pe = p_info.get('trailingPE', None)
-            high = p_info.get('fiftyTwoWeekHigh', None)
-            low = p_info.get('fiftyTwoWeekLow', None)
-
-            if price and high and low:
-                discount = round((1 - price / high) * 100, 2)
-                gain = round((price / low - 1) * 100, 2)
-            else:
-                discount = gain = None
-
-            data.append({
-                "Company": name,
-                "Price": price,
-                "P/E Ratio": pe,
-                "% From High": f"{discount}%" if discount else "N/A",
-                "% From Low": f"{gain}%" if gain else "N/A"
-            })
-
-        except:
-            continue
-
-    if data:
-        df = pd.DataFrame(data)
-        st.dataframe(df)
-
-        undervalued = df[df["P/E Ratio"] < 20]
-        if not undervalued.empty:
-            best = undervalued.sort_values(by="P/E Ratio").iloc[0]
-            st.success(f"📌 Among peers, **{best['Company']}** looks most undervalued (P/E = {best['P/E Ratio']}).")
-        else:
-            st.info("No significantly undervalued stock found among peers.")
-
-# =============== NEWS SENTIMENT SECTION ===============
-st.subheader("📵 News Sentiment Analysis")
-
-company_name = info.get("longName") or info.get("shortName") or stock_symbol
-sentiment = get_news_sentiment(company_name)
-
-if "error" in sentiment:
-    st.warning(f"Could not fetch news: {sentiment['error']}")
-else:
-    st.markdown(f"**Positive:** {sentiment['Positive']} | **Negative:** {sentiment['Negative']} | **Neutral:** {sentiment['Neutral']}")
-
-    if sentiment["Positive"] > sentiment["Negative"]:
-        st.success("✅ Overall news sentiment is positive.")
-    elif sentiment["Negative"] > sentiment["Positive"]:
-        st.error("⚠️ News sentiment is mostly negative. Be cautious.")
-    else:
-        st.info("ℹ️ Neutral news sentiment.")
-
-    with st.expander("🔍 View News Headlines"):
-        for text, label in sentiment["Details"]:
-            st.markdown(f"- {text} — *{label}*")
-
-# 🌍 MACRO & GEOPOLITICAL RISK
-st.subheader("🌍 Macro & Geopolitical Analysis")
-
-macro = get_macro_analysis(stock_symbol)
-if "error" in macro:
-    st.warning(macro["error"])
-else:
-    st.markdown(f"**Country:** {macro['country']}")
-    for item in macro["summary"]:
-        st.markdown(f"- {item}")
+st.markdown("---")
+st.markdown("📘 **Disclaimer**: This tool is for educational purposes only. Please do your own research before investing.")

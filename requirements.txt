@@ -1,8 +1,8 @@
 streamlit
 yfinance
 pandas
-matplotlib
 numpy
-textblob
 requests
-countryinfo
+textblob
+plotly
+matplotlib
