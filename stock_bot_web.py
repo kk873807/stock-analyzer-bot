@@ -8,8 +8,33 @@ import requests
 import numpy as np
 import json
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import date, timedelta
 from textblob import TextBlob
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
+from ta.volatility import BollingerBands
+
+# Default global values to avoid reference errors
+news_score = 0
+risk_score = 5  # neutral
+st.set_page_config(page_title="Stock Analyzer Bot", page_icon="📈", layout="wide")
+
+st.markdown("""
+    <style>
+        .big-font {
+            font-size:30px !important;
+            font-weight: bold;
+        }
+        .stButton>button {
+            background-color: #2c7be5;
+            color: white;
+            font-weight: bold;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown('<p class="big-font">📊 Stock Analyzer Bot</p>', unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbol, start_date, end_date):
@@ -234,3 +259,178 @@ else:
 
 st.markdown("---")
 st.markdown("📘 **Disclaimer**: This tool is for educational purposes only. Please do your own research before investing.")
+
+# ========== PHASE 8: Risk Assessment ==========
+
+st.subheader("⚠️ Risk Assessment")
+
+# 1. Volatility Score
+daily_returns = stock_data["Close"].pct_change().dropna()
+volatility = daily_returns.std()
+if volatility < 0.01:
+    vol_score = 2
+elif volatility < 0.02:
+    vol_score = 5
+else:
+    vol_score = 8
+
+# 2. P/E Ratio Score
+try:
+    pe_ratio = yf.Ticker(stock_symbol).info.get("trailingPE", None)
+    if pe_ratio is None:
+        pe_score = 5
+        pe_text = "P/E data not available"
+    elif pe_ratio < 15:
+        pe_score = 2
+        pe_text = f"Low P/E ({pe_ratio:.2f})"
+    elif pe_ratio < 30:
+        pe_score = 5
+        pe_text = f"Moderate P/E ({pe_ratio:.2f})"
+    else:
+        pe_score = 8
+        pe_text = f"High P/E ({pe_ratio:.2f})"
+except:
+    pe_score = 5
+    pe_text = "Error fetching P/E"
+
+# 3. Drawdown Score
+max_price = stock_data["Close"].max()
+current_price = stock_data["Close"].iloc[-1]
+drawdown = (max_price - current_price) / max_price
+if drawdown < 0.1:
+    dd_score = 2
+elif drawdown < 0.2:
+    dd_score = 5
+else:
+    dd_score = 8
+
+# Final Risk Score (average of 3)
+risk_score = round((vol_score + pe_score + dd_score) / 3, 1)
+
+# 📊 Display Breakdown
+st.markdown(f"**Volatility:** {volatility:.4f} → Score: {vol_score}/10")
+st.markdown(f"**{pe_text}** → Score: {pe_score}/10")
+st.markdown(f"**Drawdown:** {drawdown:.2%} → Score: {dd_score}/10")
+
+# 🚦 Display Final Risk
+if risk_score < 4:
+    st.success(f"🟢 **Low Risk** — Score: {risk_score}/10")
+elif risk_score < 7:
+    st.warning(f"🟡 **Moderate Risk** — Score: {risk_score}/10")
+else:
+    st.error(f"🔴 **High Risk** — Score: {risk_score}/10")
+
+# ========== PHASE 9: Technical Indicators ==========
+st.subheader("📉 Technical Indicators")
+
+# Ensure enough data
+if len(stock_data) < 100:
+    st.warning("Not enough historical data to compute indicators.")
+else:
+    # RSI
+    rsi_indicator = RSIIndicator(close=stock_data["Close"], window=14)
+    stock_data["RSI"] = rsi_indicator.rsi()
+
+    # MACD
+    macd = MACD(close=stock_data["Close"])
+    stock_data["MACD"] = macd.macd()
+    stock_data["Signal"] = macd.macd_signal()
+
+    # Bollinger Bands
+    bb_indicator = BollingerBands(close=stock_data["Close"])
+    stock_data["BB_High"] = bb_indicator.bollinger_hband()
+    stock_data["BB_Low"] = bb_indicator.bollinger_lband()
+
+    # Plot RSI
+    fig_rsi = go.Figure()
+    fig_rsi.add_trace(go.Scatter(x=stock_data.index, y=stock_data["RSI"], name="RSI"))
+    fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
+    fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
+    fig_rsi.update_layout(title="RSI (Relative Strength Index)", height=300)
+    st.plotly_chart(fig_rsi)
+
+    # Plot MACD
+    fig_macd = go.Figure()
+    fig_macd.add_trace(go.Scatter(x=stock_data.index, y=stock_data["MACD"], name="MACD"))
+    fig_macd.add_trace(go.Scatter(x=stock_data.index, y=stock_data["Signal"], name="Signal Line"))
+    fig_macd.update_layout(title="MACD", height=300)
+    st.plotly_chart(fig_macd)
+
+    # Plot Bollinger Bands
+    fig_bb = go.Figure()
+    fig_bb.add_trace(go.Scatter(x=stock_data.index, y=stock_data["Close"], name="Close Price"))
+    fig_bb.add_trace(go.Scatter(x=stock_data.index, y=stock_data["BB_High"], name="BB High", line=dict(dash="dot")))
+    fig_bb.add_trace(go.Scatter(x=stock_data.index, y=stock_data["BB_Low"], name="BB Low", line=dict(dash="dot")))
+    fig_bb.update_layout(title="Bollinger Bands", height=300)
+    st.plotly_chart(fig_bb)
+
+# ========== PHASE 10: Final Recommendation ==========
+st.subheader("🧠 Final Buy/Sell Recommendation")
+
+recommendation_score = 0
+reasons = []
+
+# Use only if indicators were calculated (data >= 100)
+if "RSI" in stock_data.columns:
+
+    # RSI condition
+    latest_rsi = stock_data["RSI"].iloc[-1]
+    if latest_rsi < 30:
+        recommendation_score += 1
+        reasons.append("RSI indicates the stock is oversold (good buy opportunity).")
+    elif latest_rsi > 70:
+        recommendation_score -= 1
+        reasons.append("RSI indicates the stock is overbought (might drop soon).")
+
+    # MACD condition
+    latest_macd = stock_data["MACD"].iloc[-1]
+    latest_signal = stock_data["Signal"].iloc[-1]
+    if latest_macd > latest_signal:
+        recommendation_score += 1
+        reasons.append("MACD shows bullish momentum.")
+    else:
+        recommendation_score -= 1
+        reasons.append("MACD shows bearish momentum.")
+
+    # Bollinger Bands
+    latest_close = stock_data["Close"].iloc[-1]
+    latest_bb_low = stock_data["BB_Low"].iloc[-1]
+    latest_bb_high = stock_data["BB_High"].iloc[-1]
+
+    if latest_close < latest_bb_low:
+        recommendation_score += 1
+        reasons.append("Price is near lower Bollinger Band (may rebound).")
+    elif latest_close > latest_bb_high:
+        recommendation_score -= 1
+        reasons.append("Price is near upper Bollinger Band (may fall).")
+
+# Add risk score
+if 'risk_score' in locals():
+    if risk_score < 3.5:
+        recommendation_score += 1
+        reasons.append("Low risk score indicates relatively safe investment.")
+    elif risk_score > 6:
+        recommendation_score -= 1
+        reasons.append("High volatility, consider risk before investing.")
+
+# News sentiment (optional)
+if 'news_score' in locals() or 'news_score' in globals():
+    if news_score > 0.1:
+        recommendation_score += 1
+        reasons.append("Positive sentiment in recent news.")
+    elif news_score < -0.1:
+        recommendation_score -= 1
+        reasons.append("Negative sentiment in recent news.")
+
+# Final verdict
+if recommendation_score >= 3:
+    final_recommendation = "✅ BUY"
+elif recommendation_score <= -2:
+    final_recommendation = "❌ SELL"
+else:
+    final_recommendation = "⏸️ HOLD"
+
+st.markdown(f"### Final Recommendation: **{final_recommendation}**")
+st.write("#### Reasoning:")
+for reason in reasons:
+    st.markdown(f"- {reason}")
